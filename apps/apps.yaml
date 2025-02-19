@@ -1,0 +1,7 @@
+upload_tapo_detection:
+  module: upload_tapo_detection
+  class: UploadTapoDetection
+  output: !secret output
+  host: !secret host
+  rclone_remote: !secret rclone_remote
+  password_cloud: !secret password_cloud

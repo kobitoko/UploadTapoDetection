@@ -1,0 +1,7 @@
+#with Python 3.12.3
+#pytapo
+pytapo==3.3.38
+#aiofiles
+aiofiles==24.1.0
+#rclone-python
+rclone-python==0.1.21
