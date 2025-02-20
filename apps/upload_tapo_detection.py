@@ -1,11 +1,11 @@
 from pytapo import Tapo
 from pytapo.media_stream.downloader import Downloader
-import asyncio
 import sys
+import os
+import stat
+import shutil
 from datetime import datetime
 from dataclasses import dataclass
-from rclone_python import rclone
-from rclone_python.hash_types import HashTypes
 import hassapi as hass
 
 # Taken from https://github.com/JurajNyiri/pytapo/blob/main/experiments/DownloadRecordings.py
@@ -26,50 +26,36 @@ class UploadTapoDetection(hass.Hass):
 
     def initialize(self):
         self.outputDir = self.args["output"] #os.environ.get("UTAPOD_OUTPUT")# directory path where videos will be saved
-        self.rcloneRemote = self.args["rclone_remote"] #os.environ.get("UTAPOD_RCLONE") #the remote place it will upload the file to
         self.host = self.args["host"] #os.environ.get("UTAPOD_HOST")  # change to camera IP
+        self.destination = self.args["destination"]
         self.passwordCloud = self.args["password_cloud"] #os.environ.get("UTAPOD_PASSWORD_CLOUD")  # set to your cloud password
         self.tapo = 0 # initialize, we'll get this as needed
         self.date = "" # initialize, we'll set this when we want to upload
         # optional
         self.window_size = 100 #os.environ.get("WINDOW_SIZE")  # set to prefferred window size, affects download speed and stability, recommended: 50, default is 200
-        if not rclone.is_installed():
-            self.log("rclone isn't installed! Exiting now")
-            sys.exit()
         self.log("Initialized!")
+        #TODO: how to have HA call it upon a certain action
+        self.create_task(self.execute())
 
-    def execute(self):
+    async def execute(self):
         #date = datetime.now().strftime("%Y%m%d") # date to download recordings for in format YYYYMMDD
         self.date = "20250217"#TODO this is just test, uncomment above
         self.log("Connecting to camera...")
         self.tapo = Tapo(self.host, "admin", self.passwordCloud, self.passwordCloud)
 
-        loop = asyncio.get_event_loop()
+        #loop = asyncio.get_event_loop()
         timeTaken = datetime.now()
-        DownloadedFile = loop.run_until_complete(self.DownloadAsync())
+        DownloadedFile = await self.DownloadAsync()
 
         if not DownloadedFile.isValid:
             self.log("Downloaded file was invalid!")
             sys.exit()
 
         self.log("Download time taken: " + str(datetime.now() - timeTaken))
-
-        if not rclone.is_installed():
-            self.log("rclone isn't installed! Cannot upload.")
-            sys.exit()
-
-        self.log("Uploading...")
-        localFileWithPath = "{}/{}".format(self.outputDir, DownloadedFile.fileName)
-        rclone.copy(localFileWithPath, self.rcloneRemote)
-
-        self.log("Finished uploading!")
-        hashRemoteMap = rclone.hash(HashTypes.dropbox, self.rcloneRemote)
-        hashLocalMap = rclone.hash(HashTypes.dropbox, self.outputDir)
-        if hashRemoteMap[DownloadedFile.fileName] == hashLocalMap[DownloadedFile.fileName]:
-            self.log("Remote looks good, cleaning up!")
-            rclone.delete(localFileWithPath)
-        else:
-            self.log("Remote has different hash than local file...")
+        newFilePath = "{}{}".format(self.destination, DownloadedFile.fileName)
+        shutil.move("{}{}".format(self.outputDir, DownloadedFile.fileName), newFilePath)
+        os.chmod(newFilePath, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH)
+        self.log("Finished!")
 
     def GetFileInfo(self):
         self.log("Getting recordings...")
@@ -106,7 +92,6 @@ class UploadTapoDetection(hass.Hass):
             self.window_size,
             FileToDownload.fileName
         )
-
         async for status in downloader.download():
             statusString = status["currentAction"] + " " + status["fileName"]
             if status["progress"] > 0:
@@ -118,9 +103,6 @@ class UploadTapoDetection(hass.Hass):
                 )
             else:
                 statusString += "..."
-            print(
-                statusString + (" " * 10) + "\r",
-                end="",
-            )
-        print("")
+            self.log(statusString + (" " * 10) + "\r")
+        self.log("\n")
         return FileToDownload
