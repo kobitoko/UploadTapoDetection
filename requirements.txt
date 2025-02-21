@@ -1,7 +1,7 @@
 #with Python 3.12.3
+# appdaemon for IDE when not in appdaemon
+# having trouble with py 3.12, this should work
+# pip install git+https://github.com/AppDaemon/appdaemon.git
+#pip install appdaemon
 #pytapo
 pytapo==3.3.38
-#aiofiles
-aiofiles==24.1.0
-#rclone-python
-rclone-python==0.1.21

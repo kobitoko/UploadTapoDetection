@@ -4,9 +4,10 @@ import sys
 import os
 import stat
 import shutil
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 from dataclasses import dataclass
-import hassapi as hass
+from appdaemon.plugins.hass import hassapi as hass
 
 # Taken from https://github.com/JurajNyiri/pytapo/blob/main/experiments/DownloadRecordings.py
 # mandatory:
@@ -29,55 +30,93 @@ class UploadTapoDetection(hass.Hass):
         self.host = self.args["host"] #os.environ.get("UTAPOD_HOST")  # change to camera IP
         self.destination = self.args["destination"]
         self.passwordCloud = self.args["password_cloud"] #os.environ.get("UTAPOD_PASSWORD_CLOUD")  # set to your cloud password
+        self.entityId = self.args["entity_id"]
         self.tapo = 0 # initialize, we'll get this as needed
         self.date = "" # initialize, we'll set this when we want to upload
+        self.startDetectionTime = datetime.now() # detection time to make sure the latest video is gotten.
         # optional
         self.window_size = 100 #os.environ.get("WINDOW_SIZE")  # set to prefferred window size, affects download speed and stability, recommended: 50, default is 200
+        #self.listen_event(self.runActionTask, "state_changed")
+        self.listen_event(self.runActionTask)
         self.log("Initialized!")
-        #TODO: how to have HA call it upon a certain action
-        self.create_task(self.execute())
+
+    def runActionTask(self, event_name, data, cb_args):
+        '''
+        # See all the events and their data from home assistant.
+        self.log(event_name)
+        self.log("data dict:")
+        for k,v in data.items():
+            self.log("  {}: {}".format(k,v))
+        self.log("cb_args dict:")
+        for k,v in cb_args.items():
+            self.log("  {}: {}".format(k,v))
+        self.log("done\n\n")
+        '''
+        if "entity_id" in data and data["entity_id"] != self.entityId:
+            return
+        # new state, video doesn't exist yet? should check if OLD state is on and New state is off??
+        oldState = "old_state" in data and "state" in data["old_state"] and data["old_state"]["state"]
+        newState = "new_state" in data and "state" in data["new_state"] and data["new_state"]["state"]
+        if oldState == "off" and newState == "on":
+            self.startDetectionTime = datetime.now()
+        elif oldState == "on" and newState == "off":
+            try:
+                # perhaps create a scheduled task that would run every couple seconds like 5, but only for like 20 times or something.
+                # and modify that if the local file already exists with the latest name, it skips 
+                self.create_task(self.execute())
+            except:
+                self.log("Something went really wrong. Exiting now.")
 
     async def execute(self):
-        #date = datetime.now().strftime("%Y%m%d") # date to download recordings for in format YYYYMMDD
-        self.date = "20250217"#TODO this is just test, uncomment above
+        self.date = datetime.now().strftime("%Y%m%d") # date to download recordings for in format YYYYMMDD
+        #self.date = "20250217"#TODO this is just test, uncomment above
         self.log("Connecting to camera...")
         self.tapo = Tapo(self.host, "admin", self.passwordCloud, self.passwordCloud)
-
-        #loop = asyncio.get_event_loop()
         timeTaken = datetime.now()
         DownloadedFile = await self.DownloadAsync()
-
         if not DownloadedFile.isValid:
             self.log("Downloaded file was invalid!")
-            sys.exit()
-
+            return
         self.log("Download time taken: " + str(datetime.now() - timeTaken))
         newFilePath = "{}{}".format(self.destination, DownloadedFile.fileName)
         shutil.move("{}{}".format(self.outputDir, DownloadedFile.fileName), newFilePath)
         os.chmod(newFilePath, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH)
         self.log("Finished!")
 
-    def GetFileInfo(self):
+    async def GetFileInfo(self):
         self.log("Getting recordings...")
         recordings = self.tapo.getRecordings(self.date)
         startEnd = (0,0)
-
-        # name all videos of that date, and only download latest
+        #for retry in range(6):
+            # name all videos of that date, and only download latest
+        # give some time for the video to be made on the device, 5s is not long enough, and 10s is limit, so appdaemon will kill it...
+        #time.sleep(5)
         for recording in recordings:
             for key in recording:
                 start = datetime.fromtimestamp(recording[key]["startTime"]).strftime('%Y-%m-%d %H:%M:%S')
                 end = datetime.fromtimestamp(recording[key]["endTime"]).strftime('%Y-%m-%d %H:%M:%S')
                 self.log("Video file key: " + key + " start " + start + " end: " + end)
+                # 30s before detection time, as some cctv make the clips several seconds before it.
+                #if datetime.fromtimestamp(recording[key]["startTime"]) < self.startDetectionTime - timedelta(seconds=30):
+                    # dont even bother with older recordings
+                    #continue
                 if(startEnd[0] < recording[key]["startTime"]):
                     startEnd = (recording[key]["startTime"], recording[key]["endTime"])
+            # if retry == 8:
+            #     self.log("Never found a file earlier than {}... exiting.".format(datetime.fromtimestamp(self.startDetectionTime).strftime('%Y-%m-%d %H:%M:%S')))
+            #     return self.FileInfo()
+            # else:
+            #     self.log("No file found earlier than {}, sleep for 1 second".format(datetime.fromtimestamp(self.startDetectionTime).strftime('%Y-%m-%d %H:%M:%S')))
+            #     time.sleep(1)
         # Name format: "YYYY.mm.dd_hh.mm.ss-hh.mm.ss.mp4"
         fileName = "{}-{}.mp4".format(datetime.fromtimestamp(startEnd[0]).strftime('%Y.%m.%d_%H.%M.%S'), datetime.fromtimestamp(startEnd[1]).strftime('%H.%M.%S'))
         return self.FileInfo(fileName, startEnd[0], startEnd[1], startEnd[0] != 0 and startEnd[1] != 0)
 
     async def DownloadAsync(self):
-        FileToDownload = self.GetFileInfo()
+        FileToDownload = await self.GetFileInfo()
         if not FileToDownload.isValid:
             return FileToDownload
+        #return#test
         timeCorrection = self.tapo.getTimeCorrection()
         self.log("Download recording {}".format(FileToDownload.fileName))
 

@@ -5,3 +5,4 @@ upload_tapo_detection:
   destination: !secret destination
   host: !secret host
   password_cloud: !secret password_cloud
+  entity_id: !secret entity_id
