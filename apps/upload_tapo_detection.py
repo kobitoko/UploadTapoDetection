@@ -73,6 +73,7 @@ class UploadTapoDetection(hass.Hass):
         newFilePath = "{}{}".format(self.destination, DownloadedFile.fileName)
         if not os.path.isfile("{}{}".format(self.outputDir, DownloadedFile.fileName)):
             self.log("File '{}' not found! Wasn't in the outputDir '{}'. Cannot move it to destination.".format(DownloadedFile.fileName, self.outputDir))
+            return
         self.log("Moving downloaded file to {}.".format(self.destination))
         shutil.move("{}{}".format(self.outputDir, DownloadedFile.fileName), newFilePath)
         # permissions might need to change if folder is synced to the cloud with a different software.
@@ -80,45 +81,52 @@ class UploadTapoDetection(hass.Hass):
         self.log("Finished!\n")
 
     async def GetFileInfo(self):
-        self.log("Getting recordings...")
-        recordings = self.tapo.getRecordings(self.date)
         startEnd = (0,0)
         fileName = ""
-        # retry up to 30 seconds after trigger ended.
-        retries = range(30)
-        # 30s before detection time, as some cctv make the clips several seconds before it.
-        startTimeVideo = self.startDetectionTime - timedelta(seconds=30)
+        # retry up to 5min after trigger ended.
+        retries = range(60)
+        oldVideoThreshold = datetime.now() - timedelta(seconds=300)
+        # Wait first 5 second to give the file a chance to exist.
+        sleepTime = 5
+        await self.sleep(sleepTime)
         for retry in retries:
-            # name all videos of that date, and only download latest
-            for recording in recordings:
-                for key in recording:
-                    start = datetime.fromtimestamp(recording[key]["startTime"]).strftime('%Y-%m-%d %H:%M:%S')
-                    end = datetime.fromtimestamp(recording[key]["endTime"]).strftime('%Y-%m-%d %H:%M:%S')
-                    self.log("Video file key: " + key + " start " + start + " end: " + end)
-                    if datetime.fromtimestamp(recording[key]["startTime"]) < startTimeVideo:
-                        # dont even bother with older recordings
-                        self.log("Skipping: its older than {}".format(startTimeVideo))
-                        continue
-                    if(startEnd[0] < recording[key]["startTime"]):
-                        startTime = recording[key]["startTime"]
-                        endTime = recording[key]["endTime"]
-                        # Name format: "YYYY.mm.dd_hh.mm.ss-hh.mm.ss.mp4"
-                        fileNameCandidate = "{}-{}.mp4".format(datetime.fromtimestamp(startTime).strftime('%Y.%m.%d_%H.%M.%S'), datetime.fromtimestamp(endTime).strftime('%H.%M.%S'))
-                        # make sure we don't already have that file
-                        if not os.path.isfile("{}{}".format(self.destination, fileNameCandidate)):
-                            startEnd = (startTime, endTime)
-                            fileName = fileNameCandidate
-                        else:
-                            self.log("Skipping: Found existing file '{}{}'".format(self.destination, fileName))
+            self.log("Getting recordings...")
+            recordings = self.tapo.getRecordings(self.date)
+            if recordings is not None:
+                # name all videos of that date, and only download latest
+                for recording in recordings:
+                    for key in recording:
+                        start = datetime.fromtimestamp(recording[key]["startTime"]).strftime('%Y-%m-%d %H:%M:%S')
+                        end = datetime.fromtimestamp(recording[key]["endTime"]).strftime('%Y-%m-%d %H:%M:%S')
+                        self.log("Video file key: " + key + " start " + start + " end: " + end)
+                        # 5 min old video is probably not latest video
+                        if datetime.fromtimestamp(recording[key]["endTime"]) < oldVideoThreshold:
+                            # dont even bother with older recordings
+                            self.log("Skipping: its older than {} (5 min)".format(oldVideoThreshold))
+                            continue
+                        if(startEnd[0] < recording[key]["startTime"]):
+                            startTime = recording[key]["startTime"]
+                            endTime = recording[key]["endTime"]
+                            # earlier than that, pytapo will say its in recording progress
+                            if datetime.now().timestamp() - 60 - self.tapo.getTimeCorrection() < endTime:
+                                break
+                            # Name format: "YYYY.mm.dd_hh.mm.ss-hh.mm.ss.mp4"
+                            fileNameCandidate = "{}-{}.mp4".format(datetime.fromtimestamp(startTime).strftime('%Y.%m.%d_%H.%M.%S'), datetime.fromtimestamp(endTime).strftime('%H.%M.%S'))
+                            # make sure we don't already have that file
+                            if not os.path.isfile("{}{}".format(self.destination, fileNameCandidate)):
+                                startEnd = (startTime, endTime)
+                                fileName = fileNameCandidate
+                            else:
+                                self.log("Skipping: Found existing file '{}{}'".format(self.destination, fileName))
             if fileName != "":
                 # Found a file to download.
                 break
             if retry == retries[-1]:
-                self.log("Never found a file later than {} after 30 retries, Exiting.".format(startTimeVideo.strftime('%Y-%m-%d %H:%M:%S')))
+                self.log("Never found a file later than {} after 30 retries, Exiting.".format(oldVideoThreshold.strftime('%Y-%m-%d %H:%M:%S')))
                 return self.FileInfo()
             else:
-                self.log("No file found later than {}, sleep for 1 second. retry:{}".format(startTimeVideo.strftime('%Y-%m-%d %H:%M:%S'), retry))
-                await self.sleep(1)
+                self.log("No available file found later than {0}, sleep for {1:0.2f} seconds. retry:{2}".format(oldVideoThreshold.strftime('%Y-%m-%d %H:%M:%S'), sleepTime, retry))
+                await self.sleep(sleepTime)
         return self.FileInfo(fileName, startEnd[0], startEnd[1], startEnd[0] != 0 and startEnd[1] != 0)
 
     async def DownloadAsync(self):
@@ -128,8 +136,6 @@ class UploadTapoDetection(hass.Hass):
             return FileToDownload
         timeCorrection = self.tapo.getTimeCorrection()
         self.log("Download recording {}".format(FileToDownload.fileName))
-        #return#test
-
         downloader = Downloader(
             self.tapo,
             FileToDownload.startTime,
