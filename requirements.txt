@@ -6,4 +6,5 @@
 #pytapo
 pytapo==3.3.38
 #python3 -m pip install opencv-python
-opencv-python==4.11.0.86
+#opencv-python==4.11.0.86
+opencv-python-headless==4.11.0.86

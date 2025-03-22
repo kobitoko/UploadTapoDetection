@@ -3,13 +3,14 @@ from pytapo.media_stream.downloader import Downloader
 import os
 import stat
 import shutil
+import cv2
 from datetime import datetime, timedelta
 from dataclasses import dataclass
-from appdaemon.plugins.hass import hassapi as hass
-import cv2
+import hassapi as hass
+#from appdaemon.plugins.hass import hassapi as hass
 
 # Taken from https://github.com/JurajNyiri/pytapo/blob/main/experiments/DownloadRecordings.py
-# needs ffmpeg installed, with bin in path, because e.g. convert.py uses sub process "ffprobe"
+# needs ffmpeg installed in system packages, with bin in path, because e.g. convert.py uses sub process "ffprobe"
 class UploadTapoDetection(hass.Hass):
 
     @dataclass
@@ -51,46 +52,51 @@ class UploadTapoDetection(hass.Hass):
         self.log("cb_args dict:")
         for k,v in cb_args.items():
             self.log("  {}: {}".format(k,v))
-        self.log("done\n\n")
+        self.log("done\n\n")'
         '''
+        
         if "entity_id" in data and data["entity_id"] != self.entityId:
             return
         # new state, video doesn't exist yet? should check if OLD state is on and New state is off??
         oldState = "old_state" in data and "state" in data["old_state"] and data["old_state"]["state"]
         newState = "new_state" in data and "state" in data["new_state"] and data["new_state"]["state"]
         if oldState == "off" and newState == "on":
+            self.log("NEW ON")
             self.startDetectionTime = datetime.now()
             self.activeRtspRecording = True
             self.create_task(self.recordStream, callback=self.moveDownload)
         elif oldState == "on" and newState == "off":
-            self.log("RTSP recording should stop.")
+            self.log("NEW OFF")
+            self.log("RTSP recording should stop")
             self.activeRtspRecording = False
             self.execute()
 
     async def recordStream(self):
         # taken from https://docs.opencv.org/4.5.5/dd/d43/tutorial_py_video_display.html
         cap = cv2.VideoCapture(self.rtspStream) # Open video source as object
+        fileName = self.createFileName("mkv", self.startDetectionTime.timestamp())
         fourcc = cv2.VideoWriter_fourcc(*'X264')
-        #TODO: name of file proper
-        out = cv2.VideoWriter('output.mkv', fourcc, self.rtspFps, (self.rtspWidth, self.rtspHeight))
+        out = cv2.VideoWriter("{}{}".format(self.outputDir, fileName) , fourcc, self.rtspFps, (self.rtspWidth, self.rtspHeight))
+        streamInfo = self.FileInfo(fileName, startTime=self.startDetectionTime.timestamp(), endTime=0, isValid=True)
         self.log("RTSP recording started")
         while(self.activeRtspRecording):
             ret, frame = cap.read()  # Read frame as object - numpy.ndarray, ret is a confirmation of a successfull retrieval of the frame
-            if ret:
-                out.write(frame)
             actualWidth  = round(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) #float width
             actualHeight = round(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) #float height
             if actualWidth != self.rtspWidth and actualHeight != self.rtspHeight:
-                #log here that it isn't the same!
+                # if the video writer's size dont match the frame's size, it will simply not be written to.
+                self.log("ERROR RTSP recording cancelled due to size not matching! Expected {}x{} stream's size {}x{}".format(self.rtspWidth, self.rtspHeight, actualWidth, actualHeight))
                 break
+            if ret:
+                out.write(frame)
+            # Needs opencv-python instead of headless, since it uses gui stuff:
             #cv2.imshow("frame", frame)
             #if cv2.waitKey(1) & 0xFF == ord('q'):
                 #break
-        self.log("RTSP recording finished.")
+        self.log("RTSP recording finished")
         cap.release()
         out.release()
-        cv2.destroyAllWindows()
-        #TODO: return FileInfo struct
+        return streamInfo
 
     def execute(self):
         #self.date = "20250217"# this is just a test
@@ -132,6 +138,12 @@ class UploadTapoDetection(hass.Hass):
         self.log("Download time taken: " + str(datetime.now() - timeTaken))
         return FileToDownload
 
+    def createFileName(self, extension, startTimestamp, endTimestamp = 0):
+        # Name format: "YYYY.mm.dd_hh.mm.ss-hh.mm.ss.extension"
+        if endTimestamp == 0:
+            return "{}.{}".format(datetime.fromtimestamp(startTimestamp).strftime('%Y.%m.%d_%H.%M.%S'), extension)    
+        return "{}-{}.{}".format(datetime.fromtimestamp(startTimestamp).strftime('%Y.%m.%d_%H.%M.%S'), datetime.fromtimestamp(endTimestamp).strftime('%H.%M.%S'), extension)
+
     async def getFileInfo(self):
         startEnd = (0,0)
         fileName = ""
@@ -162,8 +174,7 @@ class UploadTapoDetection(hass.Hass):
                             # earlier than that, pytapo will say its in recording progress
                             if datetime.now().timestamp() - 60 - self.tapo.getTimeCorrection() < endTime:
                                 break
-                            # Name format: "YYYY.mm.dd_hh.mm.ss-hh.mm.ss.mp4"
-                            fileNameCandidate = "{}-{}.mp4".format(datetime.fromtimestamp(startTime).strftime('%Y.%m.%d_%H.%M.%S'), datetime.fromtimestamp(endTime).strftime('%H.%M.%S'))
+                            fileNameCandidate = self.createFileName("mp4", startTime, endTime)
                             # make sure we don't already have that file
                             if not os.path.isfile("{}{}".format(self.destination, fileNameCandidate)):
                                 startEnd = (startTime, endTime)
