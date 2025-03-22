@@ -6,6 +6,7 @@ import shutil
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 from appdaemon.plugins.hass import hassapi as hass
+import cv2
 
 # Taken from https://github.com/JurajNyiri/pytapo/blob/main/experiments/DownloadRecordings.py
 # needs ffmpeg installed, with bin in path, because e.g. convert.py uses sub process "ffprobe"
@@ -24,9 +25,14 @@ class UploadTapoDetection(hass.Hass):
         self.destination = self.args["destination"] # directory path where videos will be copied to, after downloading them, include ending "/"
         self.passwordCloud = self.args["password_cloud"] # set to your cloud password
         self.entityId = self.args["entity_id"] # entity id of the sensor from home assistant that will trigger this script
+        self.rtspStream = self.args["rtsp_stream"]
+        self.rtspFps = self.args["rtsp_fps"]
+        self.rtspWidth = self.args["rtsp_width"] 
+        self.rtspHeight = self.args["rtsp_height"] 
         self.tapo = 0 # initialize pytapo, we'll get this as needed
         self.date = "" # initialize date, we'll set this when we want to download
         self.startDetectionTime = datetime.now() # detection time to make sure a recent video is gotten.
+        self.activeRtspRecording = False
         # optional
         self.window_size = 100 #os.environ.get("WINDOW_SIZE")  # set to prefferred window size, affects download speed and stability, recommended: 50, default is 200
         self.listen_event(self.runActionTask)
@@ -54,33 +60,79 @@ class UploadTapoDetection(hass.Hass):
         newState = "new_state" in data and "state" in data["new_state"] and data["new_state"]["state"]
         if oldState == "off" and newState == "on":
             self.startDetectionTime = datetime.now()
+            self.activeRtspRecording = True
+            self.create_task(self.recordStream, callback=self.moveDownload)
         elif oldState == "on" and newState == "off":
+            self.log("RTSP recording should stop.")
+            self.activeRtspRecording = False
             self.execute()
+
+    async def recordStream(self):
+        # taken from https://docs.opencv.org/4.5.5/dd/d43/tutorial_py_video_display.html
+        cap = cv2.VideoCapture(self.rtspStream) # Open video source as object
+        fourcc = cv2.VideoWriter_fourcc(*'X264')
+        #TODO: name of file proper
+        out = cv2.VideoWriter('output.mkv', fourcc, self.rtspFps, (self.rtspWidth, self.rtspHeight))
+        self.log("RTSP recording started")
+        while(self.activeRtspRecording):
+            ret, frame = cap.read()  # Read frame as object - numpy.ndarray, ret is a confirmation of a successfull retrieval of the frame
+            if ret:
+                out.write(frame)
+            actualWidth  = round(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) #float width
+            actualHeight = round(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) #float height
+            if actualWidth != self.rtspWidth and actualHeight != self.rtspHeight:
+                #log here that it isn't the same!
+                break
+            #cv2.imshow("frame", frame)
+            #if cv2.waitKey(1) & 0xFF == ord('q'):
+                #break
+        self.log("RTSP recording finished.")
+        cap.release()
+        out.release()
+        cv2.destroyAllWindows()
+        #TODO: return FileInfo struct
 
     def execute(self):
         #self.date = "20250217"# this is just a test
         self.date = datetime.now().strftime("%Y%m%d") # date to download recordings for in format YYYYMMDD
         self.log("Connecting to camera...")
         self.tapo = Tapo(self.host, "admin", self.passwordCloud, self.passwordCloud)
-        self.create_task(self.DownloadAsync(), callback=self.MoveDownload)
-    
-    def MoveDownload(self, kwargs):
-        #self.log(str(kwargs)) # what is in kwargs?
-        DownloadedFile = kwargs["result"]
-        if ("result" not in kwargs) or (not DownloadedFile.isValid):
-            self.log("Downloaded file was invalid!")
-            return
-        newFilePath = "{}{}".format(self.destination, DownloadedFile.fileName)
-        if not os.path.isfile("{}{}".format(self.outputDir, DownloadedFile.fileName)):
-            self.log("File '{}' not found! Wasn't in the outputDir '{}'. Cannot move it to destination.".format(DownloadedFile.fileName, self.outputDir))
-            return
-        self.log("Moving downloaded file to {}.".format(self.destination))
-        shutil.move("{}{}".format(self.outputDir, DownloadedFile.fileName), newFilePath)
-        # permissions might need to change if folder is synced to the cloud with a different software.
-        os.chmod(newFilePath, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH)
-        self.log("Finished!\n")
+        self.create_task(self.downloadAsync(), callback=self.moveDownload)
 
-    async def GetFileInfo(self):
+    async def downloadAsync(self):
+        timeTaken = datetime.now()
+        FileToDownload = await self.getFileInfo()
+        if not FileToDownload.isValid:
+            return FileToDownload
+        timeCorrection = self.tapo.getTimeCorrection()
+        self.log("Download recording {}".format(FileToDownload.fileName))
+        downloader = Downloader(
+            self.tapo,
+            FileToDownload.startTime,
+            FileToDownload.endTime,
+            timeCorrection,
+            self.outputDir,
+            None,
+            False,
+            self.window_size,
+            FileToDownload.fileName
+        )
+        async for status in downloader.download():
+            statusString = status["currentAction"] + " " + status["fileName"]
+            if status["progress"] > 0:
+                statusString += (
+                    ": "
+                    + str(round(status["progress"], 2))
+                    + " / "
+                    + str(status["total"])
+                )
+            else:
+                statusString += "..."
+            self.log(statusString + (" " * 10) + "\r")
+        self.log("Download time taken: " + str(datetime.now() - timeTaken))
+        return FileToDownload
+
+    async def getFileInfo(self):
         startEnd = (0,0)
         fileName = ""
         # retry up to 5min after trigger ended.
@@ -129,35 +181,18 @@ class UploadTapoDetection(hass.Hass):
                 await self.sleep(sleepTime)
         return self.FileInfo(fileName, startEnd[0], startEnd[1], startEnd[0] != 0 and startEnd[1] != 0)
 
-    async def DownloadAsync(self):
-        timeTaken = datetime.now()
-        FileToDownload = await self.GetFileInfo()
-        if not FileToDownload.isValid:
-            return FileToDownload
-        timeCorrection = self.tapo.getTimeCorrection()
-        self.log("Download recording {}".format(FileToDownload.fileName))
-        downloader = Downloader(
-            self.tapo,
-            FileToDownload.startTime,
-            FileToDownload.endTime,
-            timeCorrection,
-            self.outputDir,
-            None,
-            False,
-            self.window_size,
-            FileToDownload.fileName
-        )
-        async for status in downloader.download():
-            statusString = status["currentAction"] + " " + status["fileName"]
-            if status["progress"] > 0:
-                statusString += (
-                    ": "
-                    + str(round(status["progress"], 2))
-                    + " / "
-                    + str(status["total"])
-                )
-            else:
-                statusString += "..."
-            self.log(statusString + (" " * 10) + "\r")
-        self.log("Download time taken: " + str(datetime.now() - timeTaken))
-        return FileToDownload
+    def moveDownload(self, kwargs):
+        #self.log(str(kwargs)) # what is in kwargs?
+        DownloadedFile = kwargs["result"]
+        if ("result" not in kwargs) or (not DownloadedFile.isValid):
+            self.log("Downloaded file was invalid!")
+            return
+        newFilePath = "{}{}".format(self.destination, DownloadedFile.fileName)
+        if not os.path.isfile("{}{}".format(self.outputDir, DownloadedFile.fileName)):
+            self.log("File '{}' not found! Wasn't in the outputDir '{}'. Cannot move it to destination.".format(DownloadedFile.fileName, self.outputDir))
+            return
+        self.log("Moving downloaded file to {}.".format(self.destination))
+        shutil.move("{}{}".format(self.outputDir, DownloadedFile.fileName), newFilePath)
+        # permissions might need to change if folder is synced to the cloud with a different software.
+        os.chmod(newFilePath, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH)
+        self.log("Finished!\n")

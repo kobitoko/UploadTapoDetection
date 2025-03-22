@@ -6,3 +6,7 @@ upload_tapo_detection:
   host: !secret host
   password_cloud: !secret password_cloud
   entity_id: !secret entity_id
+  rtsp_stream: !secret rtsp_stream
+  rtsp_fps: 25
+  rtsp_width: 2304
+  rtsp_height: 1296

@@ -13,6 +13,9 @@ local dev:
 `source ./venv/Scripts/activate`
 `pip install -r requirements.txt`
 
+opencv-python using x264 codec to write the mkv, the libs are not included. After getting them put it in the same folder as the py file.  
+https://github.com/cisco/openh264/releases?q=1.8 for openh264-1.8.0-win64.dll  
+
 appdaemon for IDE when not in appdaemon  
 Having trouble with py 3.12, this should work  
 `pip install git+https://github.com/AppDaemon/appdaemon.git`
