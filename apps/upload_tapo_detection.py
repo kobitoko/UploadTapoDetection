@@ -1,13 +1,13 @@
 from pytapo import Tapo
 from pytapo.media_stream.downloader import Downloader
 import os
+import sys
 import stat
 import shutil
 import cv2
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 import hassapi as hass
-#from appdaemon.plugins.hass import hassapi as hass
 
 # Taken from https://github.com/JurajNyiri/pytapo/blob/main/experiments/DownloadRecordings.py
 # needs ffmpeg installed in system packages, with bin in path, because e.g. convert.py uses sub process "ffprobe"
@@ -42,6 +42,27 @@ class UploadTapoDetection(hass.Hass):
         #self.startDetectionTime = datetime(year=2025, month=2, day=17, hour=20, minute=22, second=17) #TEST
         #self.execute() #TEST
 
+        #Test below opencv not being able to write
+        cap = cv2.VideoCapture(self.rtspStream) # Open video source as object
+        fourcc = cv2.VideoWriter_fourcc(*'X264')
+        #fourcc = cv2.VideoWriter_fourcc(*'MJPG') # does not error like below, but also does not get anything, ret is false and frame is 0x0.
+        # error when mkv only .mp4 is ok [ WARN:2@529.410] global cap.cpp:779 open VIDEOIO(CV_IMAGES): raised OpenCV exception: OpenCV(4.11.0) 
+        # /tmp/pip-install-z7j2lyfk/opencv-python-headless_2def36a0e59047c994f0f693ce24cb9c/opencv/modules/videoio/src/cap_images.cpp:415:
+        # error: (-215:Assertion failed) !filename_pattern.empty() in function 'CvVideoWriter_Images'
+        out = cv2.VideoWriter("{}{}".format(self.outputDir, "output.mkv") , fourcc, self.rtspFps, (self.rtspWidth, self.rtspHeight))
+        #out = cv2.VideoWriter("{}{}".format(self.outputDir, "output.mp4") , fourcc, self.rtspFps, (self.rtspWidth, self.rtspHeight))
+    
+        self.log("{}{}{}".format("output dir:", self.outputDir, "outputz.mp4"))
+        ret, frame = cap.read()  # Read frame as object - numpy.ndarray, ret is a confirmation of a successfull retrieval of the frame
+        actualWidth  = round(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) #float width
+        actualHeight = round(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) #float height
+        self.log("print? {}. {}x{}".format(ret, actualWidth, actualHeight))
+        self.log(cv2.getBuildInformation())
+        cap.release()
+        out.release()
+        #test end
+
+
     def runActionTask(self, event_name, data, cb_args):
         '''
         # Uncomment to see all the events and their data from home assistant.
@@ -61,13 +82,12 @@ class UploadTapoDetection(hass.Hass):
         oldState = "old_state" in data and "state" in data["old_state"] and data["old_state"]["state"]
         newState = "new_state" in data and "state" in data["new_state"] and data["new_state"]["state"]
         if oldState == "off" and newState == "on":
-            self.log("NEW ON")
+            self.log("New motion detection!")
             self.startDetectionTime = datetime.now()
             self.activeRtspRecording = True
-            self.create_task(self.recordStream, callback=self.moveDownload)
+            self.create_task(self.recordStream(), callback=self.moveDownload)
         elif oldState == "on" and newState == "off":
-            self.log("NEW OFF")
-            self.log("RTSP recording should stop")
+            self.log("Motion detection is off now")
             self.activeRtspRecording = False
             self.execute()
 
@@ -85,7 +105,7 @@ class UploadTapoDetection(hass.Hass):
             actualHeight = round(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) #float height
             if actualWidth != self.rtspWidth and actualHeight != self.rtspHeight:
                 # if the video writer's size dont match the frame's size, it will simply not be written to.
-                self.log("ERROR RTSP recording cancelled due to size not matching! Expected {}x{} stream's size {}x{}".format(self.rtspWidth, self.rtspHeight, actualWidth, actualHeight))
+                self.log("ERROR RTSP recording cancelled due to size not matching! Expected {}x{} stream's size {}x{}. Frame retrieved?{}".format(self.rtspWidth, self.rtspHeight, actualWidth, actualHeight, ret))
                 break
             if ret:
                 out.write(frame)

@@ -6,7 +6,8 @@ something like https://github.com/JurajNyiri/pytapo/blob/main/experiments/Downlo
 download clip file to a folder  
 
 Based on https://github.com/JurajNyiri/pytapo/blob/main/experiments/DownloadRecordings.py  
-needs ffmpeg installed, with bin in path, because e.g. convert.py uses sub process "ffprobe". system_packages.txt is placed in appdaemon/conf/ folder, which appdaemon will scan and install.
+needs ffmpeg installed, with bin in path, because e.g. convert.py uses sub process "ffprobe". system_packages.txt is placed in appdaemon/conf/ folder, which appdaemon will scan and install.  
+It also needs the module aiofiles.  
 
 local dev:
 `py -m venv ./venv`
@@ -15,8 +16,12 @@ local dev:
 
 opencv-python  
 appdaemon docker uses alpine linux, so system package of `build-base`, `linux-headers`, `ninja` is needed as opencv uses wheel to build the c files.
-using x264 codec to write the mkv, the libs are not included. After getting them put it in the same folder as the py file.  
+using openh264 codec to write the mkv, the libs are not included. After getting them put it in the same folder as the py file.  
+gtk+2.0-dev and pkgconf for 
 https://github.com/cisco/openh264/releases?q=1.8 for openh264-1.8.0-win64.dll  
+
+HASS plugin does not seem to be loading with numpy > 2 so added <2 in requirements.txt  
+https://github.com/hassio-addons/addon-appdaemon/issues/345
 
 appdaemon for IDE when not in appdaemon  
 Having trouble with py 3.12, this should work  

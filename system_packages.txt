@@ -2,3 +2,6 @@ ffmpeg
 build-base
 linux-headers
 ninja
+openh264
+gtk+2.0-dev
+pkgconf
