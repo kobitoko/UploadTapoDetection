@@ -6,8 +6,8 @@
 hassapi==0.2.1
 #pytapo
 pytapo==3.3.38
-#python3 -m pip install opencv-python
+# hassapiHASS plugin does not seem to be loading with numpy >= 2
 numpy<2
-opencv-python==4.11.0.86
-#opencv-python-headless==4.11.0.86
+#pip install python-ffmpeg
 aiofiles==24.1.0
+python-ffmpeg==2.0.12

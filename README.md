@@ -14,12 +14,6 @@ local dev:
 `source ./venv/Scripts/activate`
 `pip install -r requirements.txt`
 
-opencv-python  
-appdaemon docker uses alpine linux, so system package of `build-base`, `linux-headers`, `ninja` is needed as opencv uses wheel to build the c files.
-using openh264 codec to write the mkv, the libs are not included. After getting them put it in the same folder as the py file.  
-gtk+2.0-dev and pkgconf for 
-https://github.com/cisco/openh264/releases?q=1.8 for openh264-1.8.0-win64.dll  
-
 HASS plugin does not seem to be loading with numpy > 2 so added <2 in requirements.txt  
 https://github.com/hassio-addons/addon-appdaemon/issues/345
 

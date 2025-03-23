@@ -1,10 +1,10 @@
 from pytapo import Tapo
 from pytapo.media_stream.downloader import Downloader
 import os
-import sys
 import stat
 import shutil
-import cv2
+from ffmpeg import Progress
+from ffmpeg.asyncio import FFmpeg
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 import hassapi as hass
@@ -27,41 +27,18 @@ class UploadTapoDetection(hass.Hass):
         self.passwordCloud = self.args["password_cloud"] # set to your cloud password
         self.entityId = self.args["entity_id"] # entity id of the sensor from home assistant that will trigger this script
         self.rtspStream = self.args["rtsp_stream"]
-        self.rtspFps = self.args["rtsp_fps"]
-        self.rtspWidth = self.args["rtsp_width"] 
-        self.rtspHeight = self.args["rtsp_height"] 
         self.tapo = 0 # initialize pytapo, we'll get this as needed
         self.date = "" # initialize date, we'll set this when we want to download
         self.startDetectionTime = datetime.now() # detection time to make sure a recent video is gotten.
         self.activeRtspRecording = False
+        self.ffmpeg = FFmpeg()
         # optional
         self.window_size = 100 #os.environ.get("WINDOW_SIZE")  # set to prefferred window size, affects download speed and stability, recommended: 50, default is 200
         self.listen_event(self.runActionTask)
         self.log("Initialized!")
         #TEST
         #self.startDetectionTime = datetime(year=2025, month=2, day=17, hour=20, minute=22, second=17) #TEST
-        #self.execute() #TEST
-
-        #Test below opencv not being able to write
-        cap = cv2.VideoCapture(self.rtspStream) # Open video source as object
-        fourcc = cv2.VideoWriter_fourcc(*'X264')
-        #fourcc = cv2.VideoWriter_fourcc(*'MJPG') # does not error like below, but also does not get anything, ret is false and frame is 0x0.
-        # error when mkv only .mp4 is ok [ WARN:2@529.410] global cap.cpp:779 open VIDEOIO(CV_IMAGES): raised OpenCV exception: OpenCV(4.11.0) 
-        # /tmp/pip-install-z7j2lyfk/opencv-python-headless_2def36a0e59047c994f0f693ce24cb9c/opencv/modules/videoio/src/cap_images.cpp:415:
-        # error: (-215:Assertion failed) !filename_pattern.empty() in function 'CvVideoWriter_Images'
-        out = cv2.VideoWriter("{}{}".format(self.outputDir, "output.mkv") , fourcc, self.rtspFps, (self.rtspWidth, self.rtspHeight))
-        #out = cv2.VideoWriter("{}{}".format(self.outputDir, "output.mp4") , fourcc, self.rtspFps, (self.rtspWidth, self.rtspHeight))
-    
-        self.log("{}{}{}".format("output dir:", self.outputDir, "outputz.mp4"))
-        ret, frame = cap.read()  # Read frame as object - numpy.ndarray, ret is a confirmation of a successfull retrieval of the frame
-        actualWidth  = round(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) #float width
-        actualHeight = round(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) #float height
-        self.log("print? {}. {}x{}".format(ret, actualWidth, actualHeight))
-        self.log(cv2.getBuildInformation())
-        cap.release()
-        out.release()
-        #test end
-
+        #self.downloadDirectRecording() #TEST
 
     def runActionTask(self, event_name, data, cb_args):
         '''
@@ -73,11 +50,12 @@ class UploadTapoDetection(hass.Hass):
         self.log("cb_args dict:")
         for k,v in cb_args.items():
             self.log("  {}: {}".format(k,v))
-        self.log("done\n\n")'
+        self.log("done\n\n")
         '''
         
         if "entity_id" in data and data["entity_id"] != self.entityId:
             return
+
         # new state, video doesn't exist yet? should check if OLD state is on and New state is off??
         oldState = "old_state" in data and "state" in data["old_state"] and data["old_state"]["state"]
         newState = "new_state" in data and "state" in data["new_state"] and data["new_state"]["state"]
@@ -85,40 +63,38 @@ class UploadTapoDetection(hass.Hass):
             self.log("New motion detection!")
             self.startDetectionTime = datetime.now()
             self.activeRtspRecording = True
+            # Take and then upload a lower quality video from the rtsp feed from the camera.
             self.create_task(self.recordStream(), callback=self.moveDownload)
         elif oldState == "on" and newState == "off":
             self.log("Motion detection is off now")
             self.activeRtspRecording = False
-            self.execute()
+            # Upload the high quality video directly from the camera's own recording (takes a while)
+            self.downloadDirectRecording()
 
     async def recordStream(self):
-        # taken from https://docs.opencv.org/4.5.5/dd/d43/tutorial_py_video_display.html
-        cap = cv2.VideoCapture(self.rtspStream) # Open video source as object
+        # mkv can be interrupted and still be played back properly
         fileName = self.createFileName("mkv", self.startDetectionTime.timestamp())
-        fourcc = cv2.VideoWriter_fourcc(*'X264')
-        out = cv2.VideoWriter("{}{}".format(self.outputDir, fileName) , fourcc, self.rtspFps, (self.rtspWidth, self.rtspHeight))
         streamInfo = self.FileInfo(fileName, startTime=self.startDetectionTime.timestamp(), endTime=0, isValid=True)
         self.log("RTSP recording started")
-        while(self.activeRtspRecording):
-            ret, frame = cap.read()  # Read frame as object - numpy.ndarray, ret is a confirmation of a successfull retrieval of the frame
-            actualWidth  = round(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) #float width
-            actualHeight = round(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) #float height
-            if actualWidth != self.rtspWidth and actualHeight != self.rtspHeight:
-                # if the video writer's size dont match the frame's size, it will simply not be written to.
-                self.log("ERROR RTSP recording cancelled due to size not matching! Expected {}x{} stream's size {}x{}. Frame retrieved?{}".format(self.rtspWidth, self.rtspHeight, actualWidth, actualHeight, ret))
-                break
-            if ret:
-                out.write(frame)
-            # Needs opencv-python instead of headless, since it uses gui stuff:
-            #cv2.imshow("frame", frame)
-            #if cv2.waitKey(1) & 0xFF == ord('q'):
-                #break
+        #taken from https://pypi.org/project/python-ffmpeg/
+        self.ffmpeg = (
+            FFmpeg()
+            .option("y")
+            .input(self.rtspStream, rtsp_transport="tcp", rtsp_flags="prefer_tcp")
+            .output("{}{}".format(self.outputDir, fileName), vcodec="copy")
+        )
+        # ffmpeg example is a decorator only, thanks https://stackoverflow.com/a/2007926 for how to "un-decorate"
+        self.ffmpeg.on("progress", self.shouldStop)
+        await self.ffmpeg.execute()
         self.log("RTSP recording finished")
-        cap.release()
-        out.release()
         return streamInfo
 
-    def execute(self):
+    def shouldStop(self, progress: Progress):
+        #self.log("ffmpeg progress {} should still record? {}".format(progress.frame, self.activeRtspRecording))
+        if self.activeRtspRecording == False:
+            self.ffmpeg.terminate()
+
+    def downloadDirectRecording(self):
         #self.date = "20250217"# this is just a test
         self.date = datetime.now().strftime("%Y%m%d") # date to download recordings for in format YYYYMMDD
         self.log("Connecting to camera...")
