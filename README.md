@@ -4,9 +4,11 @@ On camera motion detection
 Home assist runs a shell script py:  
 something like https://github.com/JurajNyiri/pytapo/blob/main/experiments/DownloadRecordings.py  
 download clip file to a folder  
+This is an appdaemon app with the docker version in mind.  
+https://appdaemon.readthedocs.io/en/latest/INSTALL.html#docker-install  
 
 Based on https://github.com/JurajNyiri/pytapo/blob/main/experiments/DownloadRecordings.py  
-needs ffmpeg installed, with bin in path, because e.g. convert.py uses sub process "ffprobe". system_packages.txt is placed in appdaemon/conf/ folder, which appdaemon will scan and install.  
+needs ffmpeg installed (note use Alpine linux packages, as that's what the docker's OS is), with bin in path, because e.g. convert.py uses sub process "ffprobe". system_packages.txt is placed in appdaemon/conf/ folder, which appdaemon will scan and install.  
 It also needs the module aiofiles.  
 
 local dev:
